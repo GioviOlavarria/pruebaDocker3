@@ -1,0 +1,122 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  docker-compose.yml  –  Entorno de desarrollo local
+#
+#  Servicios:
+#    mysql-despachos  → Base de datos para el microservicio de Despachos
+#    mysql-ventas     → Base de datos para el microservicio de Ventas
+#    back-despachos   → Spring Boot API REST Despachos  (puerto 8081)
+#    back-ventas      → Spring Boot API REST Ventas     (puerto 8080)
+#    front-despacho   → React + Vite (Nginx)            (puerto 3000)
+#
+#  Variables de entorno:
+#    Copia el archivo .env.example como .env y completa los valores.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  microservices-net:
+    driver: bridge
+
+volumes:
+  mysql-despachos-data:
+  mysql-ventas-data:
+
+services:
+
+  # ── Base de datos Despachos ─────────────────────────────────────────────────
+  mysql-despachos:
+    image: mysql:8.0
+    container_name: mysql-despachos
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME_DESPACHOS}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mysql-despachos-data:/var/lib/mysql
+    networks:
+      - microservices-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Base de datos Ventas ────────────────────────────────────────────────────
+  mysql-ventas:
+    image: mysql:8.0
+    container_name: mysql-ventas
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME_VENTAS}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - mysql-ventas-data:/var/lib/mysql
+    networks:
+      - microservices-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Microservicio Despachos ─────────────────────────────────────────────────
+  back-despachos:
+    build:
+      context: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+      dockerfile: Dockerfile
+    container_name: back-despachos
+    restart: unless-stopped
+    depends_on:
+      mysql-despachos:
+        condition: service_healthy
+    environment:
+      DB_ENDPOINT: mysql-despachos
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME_DESPACHOS}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8081:8081"
+    networks:
+      - microservices-net
+
+  # ── Microservicio Ventas ────────────────────────────────────────────────────
+  back-ventas:
+    build:
+      context: ./back-Ventas_SpringBoot/Springboot-API-REST
+      dockerfile: Dockerfile
+    container_name: back-ventas
+    restart: unless-stopped
+    depends_on:
+      mysql-ventas:
+        condition: service_healthy
+    environment:
+      DB_ENDPOINT: mysql-ventas
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME_VENTAS}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8080:8080"
+    networks:
+      - microservices-net
+
+  # ── Frontend React ──────────────────────────────────────────────────────────
+  front-despacho:
+    build:
+      context: ./front_despacho
+      dockerfile: Dockerfile
+    container_name: front-despacho
+    restart: unless-stopped
+    depends_on:
+      - back-despachos
+      - back-ventas
+    ports:
+      - "3000:80"
+    networks:
+      - microservices-net

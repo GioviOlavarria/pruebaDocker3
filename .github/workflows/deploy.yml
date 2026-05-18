@@ -1,0 +1,157 @@
+name: CI/CD – Build, Push & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1          # ← cámbialo si usas otra región
+  ECR_REPO_DESPACHOS: back-despachos
+  ECR_REPO_VENTAS:    back-ventas
+  ECR_REPO_FRONT:     front-despacho
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1: Tests unitarios de los backends
+  # ─────────────────────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: maven
+
+      - name: Test – Despachos
+        working-directory: back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+        run: ./mvnw test -B
+
+      - name: Test – Ventas
+        working-directory: back-Ventas_SpringBoot/Springboot-API-REST
+        run: ./mvnw test -B
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2: Build de imágenes Docker y push a Amazon ECR
+  # Solo se ejecuta en push a main (no en pull_request)
+  # ─────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push to ECR
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tag de imagen = sha corto del commit
+      - name: Generate image tag
+        id: meta
+        run: echo "tag=${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Despachos ────────────────────────────────────────────────────────
+      - name: Build & Push – Despachos
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          TAG:      ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            -t $REGISTRY/$ECR_REPO_DESPACHOS:$TAG \
+            -t $REGISTRY/$ECR_REPO_DESPACHOS:latest \
+            back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+          docker push $REGISTRY/$ECR_REPO_DESPACHOS:$TAG
+          docker push $REGISTRY/$ECR_REPO_DESPACHOS:latest
+
+      # ── Ventas ───────────────────────────────────────────────────────────
+      - name: Build & Push – Ventas
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          TAG:      ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            -t $REGISTRY/$ECR_REPO_VENTAS:$TAG \
+            -t $REGISTRY/$ECR_REPO_VENTAS:latest \
+            back-Ventas_SpringBoot/Springboot-API-REST
+          docker push $REGISTRY/$ECR_REPO_VENTAS:$TAG
+          docker push $REGISTRY/$ECR_REPO_VENTAS:latest
+
+      # ── Frontend ─────────────────────────────────────────────────────────
+      - name: Build & Push – Frontend
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          TAG:      ${{ steps.meta.outputs.tag }}
+        run: |
+          docker build \
+            -t $REGISTRY/$ECR_REPO_FRONT:$TAG \
+            -t $REGISTRY/$ECR_REPO_FRONT:latest \
+            front_despacho
+          docker push $REGISTRY/$ECR_REPO_FRONT:$TAG
+          docker push $REGISTRY/$ECR_REPO_FRONT:latest
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3: Deploy en la instancia EC2 vía SSH
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:        ${{ secrets.EC2_HOST }}
+          username:    ${{ secrets.EC2_USER }}
+          key:         ${{ secrets.EC2_SSH_KEY }}
+          port:        22
+          script: |
+            set -e
+
+            # ── Ir al directorio del proyecto ────────────────────────────
+            cd ~/app
+
+            # ── Actualizar el código ─────────────────────────────────────
+            git pull origin main
+
+            # ── Login a ECR desde la instancia EC2 ──────────────────────
+            aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+              | docker login --username AWS --password-stdin \
+                ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+
+            # ── Exportar variables para docker-compose.prod.yml ──────────
+            export AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+            export AWS_REGION=${{ env.AWS_REGION }}
+            export IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
+
+            # Las variables sensibles de DB se leen desde el .env en el servidor
+            # (nunca se guardan en el repositorio)
+
+            # ── Pull de las nuevas imágenes y redeploy ───────────────────
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+
+            # ── Limpieza de imágenes antiguas ────────────────────────────
+            docker image prune -f

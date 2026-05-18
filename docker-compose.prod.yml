@@ -1,0 +1,57 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  docker-compose.prod.yml  –  Producción en AWS EC2
+#
+#  Las bases de datos viven en AWS RDS (no se levantan como contenedores).
+#  Las imágenes se consumen desde ECR o Docker Hub (ver GitHub Actions).
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  microservices-net:
+    driver: bridge
+
+services:
+
+  back-despachos:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/back-despachos:${IMAGE_TAG:-latest}
+    container_name: back-despachos
+    restart: always
+    environment:
+      DB_ENDPOINT: ${DB_ENDPOINT}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME_DESPACHOS}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8081:8081"
+    networks:
+      - microservices-net
+
+  back-ventas:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/back-ventas:${IMAGE_TAG:-latest}
+    container_name: back-ventas
+    restart: always
+    environment:
+      DB_ENDPOINT: ${DB_ENDPOINT}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME_VENTAS}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "8080:8080"
+    networks:
+      - microservices-net
+
+  front-despacho:
+    image: ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/front-despacho:${IMAGE_TAG:-latest}
+    container_name: front-despacho
+    restart: always
+    depends_on:
+      - back-despachos
+      - back-ventas
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - microservices-net
