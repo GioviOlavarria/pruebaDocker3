@@ -28,15 +28,14 @@ jobs:
         with:
           java-version: "17"
           distribution: "temurin"
-          cache: maven
 
       - name: Test – Despachos
         working-directory: back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
-        run: ./mvnw test -B
+        run: mvn test -B
 
       - name: Test – Ventas
         working-directory: back-Ventas_SpringBoot/Springboot-API-REST
-        run: ./mvnw test -B
+        run: mvn test -B
 
   # ─────────────────────────────────────────────────────────────────────────
   # JOB 2: Build de imágenes Docker y push a Amazon ECR
